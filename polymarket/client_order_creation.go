@@ -2,10 +2,11 @@ package polymarket
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 
-	"github.com/polymarket/go-order-utils/pkg/model"
 	obuilder "github.com/0xNetuser/Polymarket-golang/polymarket/order_builder"
+	"github.com/polymarket/go-order-utils/pkg/model"
 )
 
 // ResolveTickSize 解析tick size
@@ -42,60 +43,95 @@ func (c *ClobClient) resolveFeeRate(tokenID string, userFeeRate int) (int, error
 
 // CreateOrder 创建并签名订单（限价订单）
 // 需要L1认证
+// options.RawOrder = true 时跳过 tick_size 获取和价格舍入，直接使用原始值
 func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrderOptions) (*SignedOrder, error) {
 	if err := c.assertLevel1Auth(); err != nil {
 		return nil, err
 	}
 
-	// 解析tick size
-	var tickSizePtr *TickSize
-	if options != nil && options.TickSize != nil {
-		tickSizePtr = options.TickSize
-	}
-	tickSize, err := c.resolveTickSize(orderArgs.TokenID, tickSizePtr)
-	if err != nil {
-		return nil, err
-	}
+	var side model.Side
+	var makerAmount, takerAmount *big.Int
+	var negRisk bool
+	var err error
 
-	// 验证价格
-	if !PriceValid(orderArgs.Price, tickSize) {
-		tickSizeFloat, _ := strconv.ParseFloat(string(tickSize), 64)
-		return nil, fmt.Errorf("price (%.6f), min: %s - max: %.6f", orderArgs.Price, tickSize, 1.0-tickSizeFloat)
-	}
+	// 检查是否使用原始订单模式（跳过舍入）
+	rawOrder := options != nil && options.RawOrder
 
-	// 解析neg risk
-	negRisk := false
-	if options != nil && options.NegRisk != nil {
-		negRisk = *options.NegRisk
+	if rawOrder {
+		// 原始订单模式：直接使用用户输入的价格和数量，不进行舍入
+		if orderArgs.Side == "BUY" {
+			side = model.BUY
+			// BUY: makerAmount = price * size (USDC), takerAmount = size (份数)
+			makerAmount = big.NewInt(int64(orderArgs.Price * orderArgs.Size * 1e6))
+			takerAmount = big.NewInt(int64(orderArgs.Size * 1e6))
+		} else if orderArgs.Side == "SELL" {
+			side = model.SELL
+			// SELL: makerAmount = size (份数), takerAmount = price * size (USDC)
+			makerAmount = big.NewInt(int64(orderArgs.Size * 1e6))
+			takerAmount = big.NewInt(int64(orderArgs.Price * orderArgs.Size * 1e6))
+		} else {
+			return nil, fmt.Errorf("order_args.side must be 'BUY' or 'SELL'")
+		}
+
+		// 解析 neg risk（仍需要获取，但可以通过 options 跳过）
+		if options.NegRisk != nil {
+			negRisk = *options.NegRisk
+		} else {
+			negRisk, err = c.GetNegRisk(orderArgs.TokenID)
+			if err != nil {
+				return nil, err
+			}
+		}
 	} else {
-		negRisk, err = c.GetNegRisk(orderArgs.TokenID)
+		// 标准模式：获取 tick_size 并进行舍入
+		var tickSizePtr *TickSize
+		if options != nil && options.TickSize != nil {
+			tickSizePtr = options.TickSize
+		}
+		tickSize, err := c.resolveTickSize(orderArgs.TokenID, tickSizePtr)
 		if err != nil {
 			return nil, err
 		}
-	}
 
-	// 解析手续费率
-	feeRateBps, err := c.resolveFeeRate(orderArgs.TokenID, orderArgs.FeeRateBps)
-	if err != nil {
-		return nil, err
-	}
-	orderArgs.FeeRateBps = feeRateBps
+		// 验证价格
+		if !PriceValid(orderArgs.Price, tickSize) {
+			tickSizeFloat, _ := strconv.ParseFloat(string(tickSize), 64)
+			return nil, fmt.Errorf("price (%.6f), min: %s - max: %.6f", orderArgs.Price, tickSize, 1.0-tickSizeFloat)
+		}
 
-	// 获取舍入配置
-	roundConfig, ok := obuilder.RoundingConfig[string(tickSize)]
-	if !ok {
-		return nil, fmt.Errorf("unsupported tick size: %s", tickSize)
-	}
+		// 解析neg risk
+		if options != nil && options.NegRisk != nil {
+			negRisk = *options.NegRisk
+		} else {
+			negRisk, err = c.GetNegRisk(orderArgs.TokenID)
+			if err != nil {
+				return nil, err
+			}
+		}
 
-	// 获取订单金额
-	side, makerAmount, takerAmount, err := c.builder.GetOrderAmounts(
-		orderArgs.Side,
-		orderArgs.Size,
-		orderArgs.Price,
-		roundConfig,
-	)
-	if err != nil {
-		return nil, err
+		// 解析手续费率
+		feeRateBps, err := c.resolveFeeRate(orderArgs.TokenID, orderArgs.FeeRateBps)
+		if err != nil {
+			return nil, err
+		}
+		orderArgs.FeeRateBps = feeRateBps
+
+		// 获取舍入配置
+		roundConfig, ok := obuilder.RoundingConfig[string(tickSize)]
+		if !ok {
+			return nil, fmt.Errorf("unsupported tick size: %s", tickSize)
+		}
+
+		// 获取订单金额（带舍入）
+		side, makerAmount, takerAmount, err = c.builder.GetOrderAmounts(
+			orderArgs.Side,
+			orderArgs.Size,
+			orderArgs.Price,
+			roundConfig,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 构建OrderData
@@ -266,5 +302,3 @@ func ConvertOrderSummaries(summaries []OrderSummary) []interface{} {
 	}
 	return result
 }
-
-

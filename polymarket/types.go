@@ -136,6 +136,7 @@ type CreateOrderOptions struct {
 type PartialCreateOrderOptions struct {
 	TickSize *TickSize `json:"tick_size,omitempty"`
 	NegRisk  *bool     `json:"neg_risk,omitempty"`
+	RawOrder bool      `json:"raw_order,omitempty"` // 跳过 tick_size 获取和价格舍入，直接使用原始值
 }
 
 // RoundConfig 舍入配置
