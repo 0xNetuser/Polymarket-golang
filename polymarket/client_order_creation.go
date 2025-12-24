@@ -43,7 +43,7 @@ func (c *ClobClient) resolveFeeRate(tokenID string, userFeeRate int) (int, error
 
 // CreateOrder 创建并签名订单（限价订单）
 // 需要L1认证
-// options.RawOrder = true 时跳过 tick_size 获取和价格舍入，直接使用原始值
+// options.RawOrder = true 时跳过从服务器获取 tick_size，但必须通过 options.TickSize 提供
 func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrderOptions) (*SignedOrder, error) {
 	if err := c.assertLevel1Auth(); err != nil {
 		return nil, err
@@ -53,50 +53,32 @@ func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrd
 	var makerAmount, takerAmount *big.Int
 	var negRisk bool
 	var err error
+	var tickSize TickSize
 
-	// 检查是否使用原始订单模式（跳过舍入）
+	// 检查是否使用原始订单模式（跳过从服务器获取 tick_size）
 	rawOrder := options != nil && options.RawOrder
 
 	if rawOrder {
-		// 原始订单模式：直接使用用户输入的价格和数量，不进行舍入
-		if orderArgs.Side == "BUY" {
-			side = model.BUY
-			// BUY: makerAmount = price * size (USDC), takerAmount = size (份数)
-			makerAmount = big.NewInt(int64(orderArgs.Price * orderArgs.Size * 1e6))
-			takerAmount = big.NewInt(int64(orderArgs.Size * 1e6))
-		} else if orderArgs.Side == "SELL" {
-			side = model.SELL
-			// SELL: makerAmount = size (份数), takerAmount = price * size (USDC)
-			makerAmount = big.NewInt(int64(orderArgs.Size * 1e6))
-			takerAmount = big.NewInt(int64(orderArgs.Price * orderArgs.Size * 1e6))
-		} else {
-			return nil, fmt.Errorf("order_args.side must be 'BUY' or 'SELL'")
+		// 原始订单模式：必须提供 TickSize
+		if options.TickSize == nil {
+			return nil, fmt.Errorf("RawOrder mode requires TickSize to be provided in options")
 		}
+		tickSize = *options.TickSize
 
-		// 解析 neg risk（仍需要获取，但可以通过 options 跳过）
-		if options.NegRisk != nil {
-			negRisk = *options.NegRisk
-		} else {
-			negRisk, err = c.GetNegRisk(orderArgs.TokenID)
-			if err != nil {
-				return nil, err
-			}
+		// 解析 neg risk（必须提供）
+		if options.NegRisk == nil {
+			return nil, fmt.Errorf("RawOrder mode requires NegRisk to be provided in options")
 		}
+		negRisk = *options.NegRisk
 	} else {
-		// 标准模式：获取 tick_size 并进行舍入
+		// 标准模式：从服务器获取 tick_size（如果未提供）
 		var tickSizePtr *TickSize
 		if options != nil && options.TickSize != nil {
 			tickSizePtr = options.TickSize
 		}
-		tickSize, err := c.resolveTickSize(orderArgs.TokenID, tickSizePtr)
+		tickSize, err = c.resolveTickSize(orderArgs.TokenID, tickSizePtr)
 		if err != nil {
 			return nil, err
-		}
-
-		// 验证价格
-		if !PriceValid(orderArgs.Price, tickSize) {
-			tickSizeFloat, _ := strconv.ParseFloat(string(tickSize), 64)
-			return nil, fmt.Errorf("price (%.6f), min: %s - max: %.6f", orderArgs.Price, tickSize, 1.0-tickSizeFloat)
 		}
 
 		// 解析neg risk
@@ -115,23 +97,29 @@ func (c *ClobClient) CreateOrder(orderArgs *OrderArgs, options *PartialCreateOrd
 			return nil, err
 		}
 		orderArgs.FeeRateBps = feeRateBps
+	}
 
-		// 获取舍入配置
-		roundConfig, ok := obuilder.RoundingConfig[string(tickSize)]
-		if !ok {
-			return nil, fmt.Errorf("unsupported tick size: %s", tickSize)
-		}
+	// 验证价格
+	if !PriceValid(orderArgs.Price, tickSize) {
+		tickSizeFloat, _ := strconv.ParseFloat(string(tickSize), 64)
+		return nil, fmt.Errorf("price (%.6f), min: %s - max: %.6f", orderArgs.Price, tickSize, 1.0-tickSizeFloat)
+	}
 
-		// 获取订单金额（带舍入）
-		side, makerAmount, takerAmount, err = c.builder.GetOrderAmounts(
-			orderArgs.Side,
-			orderArgs.Size,
-			orderArgs.Price,
-			roundConfig,
-		)
-		if err != nil {
-			return nil, err
-		}
+	// 获取舍入配置
+	roundConfig, ok := obuilder.RoundingConfig[string(tickSize)]
+	if !ok {
+		return nil, fmt.Errorf("unsupported tick size: %s", tickSize)
+	}
+
+	// 获取订单金额（带舍入）
+	side, makerAmount, takerAmount, err = c.builder.GetOrderAmounts(
+		orderArgs.Side,
+		orderArgs.Size,
+		orderArgs.Price,
+		roundConfig,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	// 构建OrderData

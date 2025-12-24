@@ -151,24 +151,27 @@ if err != nil {
 fmt.Printf("Order posted: %+v\n", result)
 ```
 
-### Raw Order Mode (Skip Price Rounding)
+### Raw Order Mode (Skip Server Requests)
 
-By default, `CreateOrder` fetches the market's `tick_size` and rounds the price accordingly. If you want to skip this and use the exact price you specified, use the `RawOrder` option:
+By default, `CreateOrder` fetches the market's `tick_size`, `neg_risk`, and `fee_rate` from the server. If you want to skip these API calls and provide these values yourself, use the `RawOrder` option:
 
 ```go
 orderArgs := &polymarket.OrderArgs{
     TokenID:    "token-id",
-    Price:      0.567,  // Will be used as-is, not rounded
+    Price:      0.56,
     Size:       100.0,
     Side:       "BUY",
     Expiration: 0,
 }
 
-// Use RawOrder mode to skip tick_size fetching and price rounding
+// Use RawOrder mode to skip server requests
+// Must provide TickSize and NegRisk
+tickSize := polymarket.TickSize("0.01")
 negRisk := false
 options := &polymarket.PartialCreateOrderOptions{
-    RawOrder: true,     // Skip tick_size and rounding
-    NegRisk:  &negRisk, // Optional, will be fetched if not provided
+    RawOrder: true,       // Skip server requests for tick_size/neg_risk/fee_rate
+    TickSize: &tickSize,  // Required in RawOrder mode
+    NegRisk:  &negRisk,   // Required in RawOrder mode
 }
 
 order, err := client.CreateOrder(orderArgs, options)
@@ -176,7 +179,7 @@ order, err := client.CreateOrder(orderArgs, options)
 result, err := client.CreateAndPostOrder(orderArgs, options)
 ```
 
-**Note**: When using `RawOrder: true`, the order may be rejected by the exchange if the price precision exceeds the market's supported tick_size.
+**Note**: In `RawOrder` mode, `TickSize` and `NegRisk` are **required**. The library still uses `TickSize` to convert price/size to the correct amounts.
 
 ### Order Types
 

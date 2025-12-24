@@ -124,18 +124,21 @@ chmod +x run.sh
 ./run.sh
 ```
 
-## 原始订单模式（跳过价格舍入）
+## 原始订单模式（跳过服务器请求）
 
-默认情况下，SDK 会从 API 获取市场的 `tick_size` 并对价格进行舍入。例如，如果市场的 tick_size 是 `0.01`，价格 `0.567` 会被舍入到 `0.57`。
+默认情况下，SDK 会从服务器获取市场的 `tick_size`、`neg_risk` 和 `fee_rate`。这意味着每次创建订单前可能有 1-3 次额外的 API 调用。
 
-如果你想跳过这个步骤，直接使用你指定的精确价格，可以在代码中使用 `RawOrder` 选项：
+如果你想跳过这些服务器请求，可以使用 `RawOrder` 选项，并自行提供必需的参数：
 
 ```go
-// 使用 RawOrder 模式跳过 tick_size 获取和价格舍入
+// 使用 RawOrder 模式跳过服务器请求
+// 必须提供 TickSize 和 NegRisk
+tickSize := polymarket.TickSize("0.01")
 negRisk := false
 options := &polymarket.PartialCreateOrderOptions{
-    RawOrder: true,     // 跳过 tick_size 和舍入
-    NegRisk:  &negRisk, // 可选，不提供时会自动获取
+    RawOrder: true,       // 跳过 tick_size/neg_risk/fee_rate 的服务器请求
+    TickSize: &tickSize,  // RawOrder 模式下必须提供
+    NegRisk:  &negRisk,   // RawOrder 模式下必须提供
 }
 
 order, err := client.CreateOrder(orderArgs, options)
@@ -143,14 +146,14 @@ order, err := client.CreateOrder(orderArgs, options)
 result, err := client.CreateAndPostOrder(orderArgs, options)
 ```
 
-### 对比示例
+### 两种模式对比
 
-| 模式 | 输入价格 | tick_size=0.01 时的实际价格 |
-|------|----------|---------------------------|
-| 标准模式 | 0.567 | 0.57（舍入到2位小数） |
-| 原始模式 | 0.567 | 0.567（保持原始值） |
+| 模式 | 服务器请求 | 必需参数 |
+|------|-----------|---------|
+| 标准模式 | GetTickSize + GetNegRisk + GetFeeRateBps | 无 |
+| RawOrder 模式 | 无（仅 PostOrder） | `TickSize` + `NegRisk` |
 
-**注意**：使用原始模式时，如果价格精度超出市场支持的 tick_size，订单可能会被交易所拒绝。
+**注意**：在 `RawOrder` 模式下，库仍然会使用提供的 `TickSize` 进行价格/数量转换。
 
 ## 订单类型
 
@@ -164,10 +167,14 @@ options := &polymarket.PartialCreateOrderOptions{
 }
 result, err := client.CreateAndPostOrder(orderArgs, options)
 
-// 组合使用：RawOrder + FAK
+// 组合使用：RawOrder + FAK（无额外服务器请求）
+tickSize := polymarket.TickSize("0.01")
+negRisk := false
 orderType := polymarket.OrderTypeFAK
 options := &polymarket.PartialCreateOrderOptions{
     RawOrder:  true,
+    TickSize:  &tickSize,
+    NegRisk:   &negRisk,
     OrderType: &orderType,
 }
 result, err := client.CreateAndPostOrder(orderArgs, options)
